@@ -262,50 +262,53 @@ namespace UltimateFishBot.Classes
             m_mouth.Say(Translate.GetTranslate("manager", "LABEL_CASTING"));
             await m_hands.Cast(cancellationToken);
 
+            CancellationTokenSource listenToken = new CancellationTokenSource();
+            Task<bool> fishHeardTask = m_ears.Listen(Properties.Settings.Default.FishWait, listenToken.Token);
+
             m_mouth.Say(Translate.GetTranslate("manager", "LABEL_FINDING"));
-            bool didFindFish = await m_eyes.LookForBobber(cancellationToken);
-            if (!didFindFish)
+            bool didFindBobber = await m_eyes.LookForBobber(cancellationToken);
+            if (!didFindBobber)
             {
                 m_fishingStats.RecordBobberNotFound();
                 return;
             }
 
-            // Update UI with wait status            
-            var uiUpdateCancelTokenSource =
-                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var uiUpdateCancelToken = uiUpdateCancelTokenSource.Token;
-            var progress = new Progress<long>(msecs =>
-            {
-                if (!uiUpdateCancelToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            if (!listenToken.IsCancellationRequested && listenToken.Token.CanBeCanceled) {
+                listenToken.Cancel();
+            }
+            listenToken.Dispose();
+
+            bool fishHeard = !fishHeardTask.IsCanceled && !fishHeardTask.IsFaulted && fishHeardTask.IsCompleted && fishHeardTask.Result;
+            if (!fishHeard) {
+                // Update UI with wait status            
+                var uiUpdateCancelTokenSource =
+                    CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                var uiUpdateCancelToken = uiUpdateCancelTokenSource.Token;
+                var progress = new Progress<long>(msecs =>
                 {
-                    m_mouth.Say(Translate.GetTranslate(
-                        "manager",
-                        "LABEL_WAITING",
-                        msecs / SECOND,
-                        Properties.Settings.Default.FishWait / SECOND));
+                    if (!uiUpdateCancelToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested) {
+                        m_mouth.Say(Translate.GetTranslate(
+                            "manager",
+                            "LABEL_WAITING",
+                            msecs / SECOND,
+                            Properties.Settings.Default.FishWait / SECOND));
+                    }
+                });
+                var uiUpdateTask = Task.Run(
+                    async () => await UpdateUIWhileWaitingToHearFish(progress, uiUpdateCancelToken),
+                    uiUpdateCancelToken);
+
+                fishHeard = await m_ears.Listen(Properties.Settings.Default.FishWait, cancellationToken);
+                uiUpdateCancelTokenSource.Cancel();
+                try {
+                    uiUpdateTask.GetAwaiter().GetResult(); // Wait & Unwrap
+                                                            // https://github.com/StephenCleary/AsyncEx/blob/dc54d22b06566c76db23af06afcd0727cac625ef/Source/Nito.AsyncEx%20(NET45%2C%20Win8%2C%20WP8%2C%20WPA81)/Synchronous/TaskExtensions.cs#L18
+                } catch (TaskCanceledException) {
+                } finally {
+                    uiUpdateCancelTokenSource.Dispose();
                 }
-            });
-            var uiUpdateTask = Task.Run(
-                async () => await UpdateUIWhileWaitingToHearFish(progress, uiUpdateCancelToken),
-                uiUpdateCancelToken);
-
-            bool fishHeard = await m_ears.Listen(
-                Properties.Settings.Default.FishWait,
-                cancellationToken);
-            uiUpdateCancelTokenSource.Cancel();
-            try
-            {
-                uiUpdateTask.GetAwaiter().GetResult(); // Wait & Unwrap
-                // https://github.com/StephenCleary/AsyncEx/blob/dc54d22b06566c76db23af06afcd0727cac625ef/Source/Nito.AsyncEx%20(NET45%2C%20Win8%2C%20WP8%2C%20WPA81)/Synchronous/TaskExtensions.cs#L18
             }
-            catch (TaskCanceledException)
-            {
-            }
-            finally
-            {
-                uiUpdateCancelTokenSource.Dispose();
-            }
-
+            
             if (!fishHeard)
             {
                 m_fishingStats.RecordNotHeard();
